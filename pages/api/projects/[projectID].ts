@@ -1,6 +1,6 @@
 // pages/api/projects/[projectID].ts
 import type { NextApiRequest, NextApiResponse } from 'next';
-import { getDb, Project, StockRecord, ProjectWithProgress, ProjectDetailApiResponse } from '../../../lib/db';
+import { getDb, Project, StockRecord, ProjectWithProgress, ProjectDetailApiResponse } from '@/lib/db';
 
 export default async function handler(
   req: NextApiRequest,
@@ -25,10 +25,10 @@ export default async function handler(
       return;
     }
 
-    let rawStockRecords: Omit<StockRecord, 'cumulativeBenchmarkVWAP' | 'vwapPerformanceBps'>[] = [];
+    let rawStockRecords: Omit<StockRecord, 'cumulativeBenchmarkVWAP' | 'vwapPerformanceBps' | 'cumulativeFilledAmount' | 'cumulativeFilledQty' | 'dailyPL'>[] = [];
     if (projectData.ProjectID) {
-      rawStockRecords = await db.all<Omit<StockRecord, 'cumulativeBenchmarkVWAP' | 'vwapPerformanceBps'>[]>(
-        'SELECT * FROM stock_records WHERE ProjectID = ? ORDER BY Date ASC',
+      rawStockRecords = await db.all<Omit<StockRecord, 'cumulativeBenchmarkVWAP' | 'vwapPerformanceBps' | 'cumulativeFilledAmount' | 'cumulativeFilledQty' | 'dailyPL'>[]>(
+        'SELECT * FROM stock_records WHERE ProjectID = ? ORDER BY Date ASC', 
         projectData.ProjectID
       );
     }
@@ -36,104 +36,127 @@ export default async function handler(
     const distinctDailyVWAPsEncountered = new Map<string, number>();
     let sumOfDistinctVWAPsForBenchmark = 0;
     let countOfDistinctDaysForBenchmark = 0;
+    let currentCumulativeFilledAmount = 0;
+    let currentCumulativeFilledQty = 0;
 
-    const processedStockRecords: StockRecord[] = rawStockRecords.map(record => {
-      if (!distinctDailyVWAPsEncountered.has(record.Date)) {
-        const dailyVWAP = record.ALL_DAY_VWAP || 0;
-        distinctDailyVWAPsEncountered.set(record.Date, dailyVWAP);
-        sumOfDistinctVWAPsForBenchmark += dailyVWAP;
+    const processedStockRecords: StockRecord[] = rawStockRecords.map(rawRecord => {
+      const recordFilledQty = typeof rawRecord.FilledQty === 'number' ? rawRecord.FilledQty : null;
+      const recordFilledAveragePrice = typeof rawRecord.FilledAveragePrice === 'number' ? rawRecord.FilledAveragePrice : null;
+      const recordAllDayVWAP = typeof rawRecord.ALL_DAY_VWAP === 'number' ? rawRecord.ALL_DAY_VWAP : null;
+      const recordDate = rawRecord.Date || '';
+      const recordStockCycle = rawRecord.StockCycle || '';
+      const recordProjectID = rawRecord.ProjectID || '';
+
+      if (!distinctDailyVWAPsEncountered.has(recordDate) && recordAllDayVWAP !== null) {
+        distinctDailyVWAPsEncountered.set(recordDate, recordAllDayVWAP);
+        sumOfDistinctVWAPsForBenchmark += recordAllDayVWAP;
         countOfDistinctDaysForBenchmark++;
       }
-      const currentCumulativeBenchmark = (countOfDistinctDaysForBenchmark > 0)
+      // この日までのプロジェクト期間全体のベンチマークVWAP（日々のVWAPの単純平均の推移）
+      const currentProjectBenchmarkVWAP = (countOfDistinctDaysForBenchmark > 0) 
         ? (sumOfDistinctVWAPsForBenchmark / countOfDistinctDaysForBenchmark)
         : null;
 
       let vwapPerfBps: number | null = null;
-      if (record.FilledAveragePrice != null && record.ALL_DAY_VWAP != null && record.ALL_DAY_VWAP !== 0) {
+      if (recordFilledAveragePrice != null && recordAllDayVWAP != null && recordAllDayVWAP !== 0) {
         if (projectData.Side === 'BUY') {
-          vwapPerfBps = ((record.ALL_DAY_VWAP - record.FilledAveragePrice) / record.ALL_DAY_VWAP) * 10000;
+          vwapPerfBps = ((recordAllDayVWAP - recordFilledAveragePrice) / recordAllDayVWAP) * 10000;
         } else if (projectData.Side === 'SELL') {
-          vwapPerfBps = ((record.FilledAveragePrice - record.ALL_DAY_VWAP) / record.ALL_DAY_VWAP) * 10000;
+          vwapPerfBps = ((recordFilledAveragePrice - recordAllDayVWAP) / recordAllDayVWAP) * 10000;
         }
+      }
+      
+      let dailyFilledAmount = 0;
+      if (recordFilledQty != null && recordFilledAveragePrice != null) {
+        dailyFilledAmount = recordFilledQty * recordFilledAveragePrice;
+      }
+      currentCumulativeFilledAmount += dailyFilledAmount; 
+
+      if (recordFilledQty != null) {
+        currentCumulativeFilledQty += recordFilledQty;
+      }
+      const recordCumulativeFilledQty = currentCumulativeFilledQty;
+      const recordCumulativeFilledAmount = currentCumulativeFilledAmount;
+
+      // --- P/L計算 (ベンチマーク変更) ---
+      // このP/Lは、その日までの全取引を、「その日までのプロジェクトベンチマークVWAPの平均」で評価した場合の損益
+      let dailyPL: number | null = null;
+      if (currentProjectBenchmarkVWAP != null && // 当日VWAPではなく、累積プロジェクトベンチマークを使用
+          recordCumulativeFilledQty > 0 && 
+          recordCumulativeFilledAmount != null &&
+          (projectData.Side === 'BUY' || projectData.Side === 'SELL') ) {
+        if (projectData.Side === 'BUY') {
+          // BUY: (プロジェクトベンチマークVWAP × 累積約定株数) - 累積約定金額
+          dailyPL = (currentProjectBenchmarkVWAP * recordCumulativeFilledQty) - recordCumulativeFilledAmount;
+        } else { // SELL の場合
+          // SELL: 累積約定金額 - (プロジェクトベンチマークVWAP × 累積約定株数)
+          dailyPL = recordCumulativeFilledAmount - (currentProjectBenchmarkVWAP * recordCumulativeFilledQty);
+        }
+      } else if (recordCumulativeFilledQty === 0) {
+          dailyPL = 0;
       }
 
       return {
-        ...record,
-        cumulativeBenchmarkVWAP: currentCumulativeBenchmark,
+        StockCycle: recordStockCycle,
+        ProjectID: recordProjectID,
+        FilledQty: recordFilledQty !== null ? recordFilledQty : 0,
+        FilledAveragePrice: recordFilledAveragePrice !== null ? recordFilledAveragePrice : 0,
+        ALL_DAY_VWAP: recordAllDayVWAP !== null ? recordAllDayVWAP : 0,
+        Date: recordDate,
+        cumulativeBenchmarkVWAP: currentProjectBenchmarkVWAP, // これがP/L計算に使用されるベンチマーク
         vwapPerformanceBps: vwapPerfBps,
-      };
+        cumulativeFilledAmount: recordCumulativeFilledAmount,
+        cumulativeFilledQty: recordCumulativeFilledQty,
+        dailyPL: dailyPL,
+      } as StockRecord;
     });
+
+    const finalTotalProjectFilledQty = currentCumulativeFilledQty;
+    const finalTotalProjectFilledAmount = currentCumulativeFilledAmount;
 
     let daysProgress = 0;
     const currentTradedDaysCount = distinctDailyVWAPsEncountered.size;
     if (projectData.Business_Days && projectData.Business_Days > 0) {
         daysProgress = (currentTradedDaysCount / projectData.Business_Days) * 100;
-        daysProgress = Math.min(100, Math.max(0, daysProgress)); // 0-100に収める
+        daysProgress = Math.min(100, Math.max(0, daysProgress));
     }
 
     let executionProgress = 0;
-    let totalFilledQty: number | undefined = undefined;
-    let totalFilledAmount: number | undefined = undefined;
-
     if (processedStockRecords.length > 0) {
-      totalFilledQty = processedStockRecords.reduce((sum, sr) => sum + (sr.FilledQty || 0), 0);
-      totalFilledAmount = processedStockRecords.reduce((sum, sr) => sum + ((sr.FilledQty || 0) * (sr.FilledAveragePrice || 0)), 0);
-
       if (projectData.Side === 'SELL' && projectData.Total_Shares && projectData.Total_Shares > 0) {
-        executionProgress = (totalFilledQty && projectData.Total_Shares) ? (totalFilledQty / projectData.Total_Shares) * 100 : 0;
+        executionProgress = (finalTotalProjectFilledQty / projectData.Total_Shares) * 100;
       } else if (projectData.Side === 'BUY' && projectData.Total_Amount && projectData.Total_Amount > 0) {
-        executionProgress = (totalFilledAmount && projectData.Total_Amount) ? (totalFilledAmount / projectData.Total_Amount) * 100 : 0;
+        executionProgress = (finalTotalProjectFilledAmount / projectData.Total_Amount) * 100;
       }
-      executionProgress = Math.min(100, Math.max(0, executionProgress)); // 0-100に収める
+      executionProgress = Math.min(100, Math.max(0, executionProgress));
     }
     
-    const overallBenchmarkVWAP = (countOfDistinctDaysForBenchmark > 0)
+    // プロジェクト全体の最終的なベンチマークVWAP
+    const overallProjectBenchmarkVWAPToDisplay = (countOfDistinctDaysForBenchmark > 0)
         ? (sumOfDistinctVWAPsForBenchmark / countOfDistinctDaysForBenchmark)
         : null;
+
     let averageExecutionPrice: number | null = null;
-    if (totalFilledQty && totalFilledQty > 0 && totalFilledAmount !== undefined && totalFilledAmount !== null) { // totalFilledQtyが0でないことを確認
-        averageExecutionPrice = totalFilledAmount / totalFilledQty;
+    if (finalTotalProjectFilledQty > 0 && finalTotalProjectFilledAmount !== null) { 
+        averageExecutionPrice = finalTotalProjectFilledAmount / finalTotalProjectFilledQty;
     }
     let averageDailyShares: number | null = null;
-    if (currentTradedDaysCount > 0 && totalFilledQty !== undefined && totalFilledQty !== null) {
-        averageDailyShares = totalFilledQty / currentTradedDaysCount;
-    }
-
-    // --- プロジェクトPLの計算 ---
-    let projectPL: number | null = null;
-    if (
-      projectData.Side &&
-      overallBenchmarkVWAP !== null &&
-      totalFilledQty !== undefined && totalFilledQty !== null && totalFilledQty > 0 && // PL計算には約定株数が必要
-      totalFilledAmount !== undefined && totalFilledAmount !== null
-    ) {
-      if (projectData.Side === 'BUY') {
-        projectPL = (overallBenchmarkVWAP * totalFilledQty) - totalFilledAmount;
-      } else if (projectData.Side === 'SELL') {
-        projectPL = totalFilledAmount - (overallBenchmarkVWAP * totalFilledQty);
-      }
+    if (currentTradedDaysCount > 0 && finalTotalProjectFilledQty !== null) {
+        averageDailyShares = finalTotalProjectFilledQty / currentTradedDaysCount;
     }
 
     const projectWithProgressData: ProjectWithProgress = {
       ...projectData,
-      daysProgress: daysProgress, // 既に丸められているか、または丸める処理を追加
-      executionProgress: executionProgress, // 同上
-      totalFilledQty: totalFilledQty,
-      totalFilledAmount: totalFilledAmount,
+      daysProgress: parseFloat(daysProgress.toFixed(2)),
+      executionProgress: parseFloat(executionProgress.toFixed(2)),
+      totalFilledQty: finalTotalProjectFilledQty,
+      totalFilledAmount: finalTotalProjectFilledAmount,
       tradedDaysCount: currentTradedDaysCount,
-      benchmarkVWAP: overallBenchmarkVWAP,
+      benchmarkVWAP: overallProjectBenchmarkVWAPToDisplay, // パフォーマンス指標に表示するVWAP
       averageExecutionPrice: averageExecutionPrice,
       averageDailyShares: averageDailyShares,
-      projectPL: projectPL, // 新しいPLフィールド
     };
     
-    // 数値の丸め処理を一箇所で行うか、各計算時に行うか方針を統一
-    // ここでは主要な計算結果はそのまま渡し、フロントエンドで表示時に丸めることを推奨
-    // ただし、daysProgress と executionProgress は % なのでAPI側で丸めても良い
-    projectWithProgressData.daysProgress = parseFloat(projectWithProgressData.daysProgress.toFixed(2));
-    projectWithProgressData.executionProgress = parseFloat(projectWithProgressData.executionProgress.toFixed(2));
-    // 他の monetary/price/quantity value はフロントで formatNumber/formatCurrency を使う
-
     res.status(200).json({ project: projectWithProgressData, stockRecords: processedStockRecords });
 
   } catch (error) {

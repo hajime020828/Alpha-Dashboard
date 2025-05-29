@@ -1,7 +1,7 @@
 // pages/projects/[projectID].tsx
 import { useRouter } from 'next/router';
 import { useEffect, useState } from 'react';
-import type { StockRecord, ProjectWithProgress, ProjectDetailApiResponse } from '../../lib/db';
+import type { StockRecord, ProjectWithProgress, ProjectDetailApiResponse } from '@/lib/db';
 import { Chart } from 'react-chartjs-2';
 import {
   Chart as ChartJS,
@@ -36,7 +36,6 @@ const ProjectDetailPage = () => {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    // ... (既存のfetchロジックは変更なし) ...
     if (projectID && typeof projectID === 'string') {
       const fetchProjectDetails = async () => {
         try {
@@ -75,6 +74,13 @@ const ProjectDetailPage = () => {
 
   const formatNumber = (value: number | null | undefined, fracDigits = 2, defaultVal: string = 'N/A') => {
     if (value === null || value === undefined) return defaultVal;
+    // 整数部のみカンマ区切り、小数点以下は指定通り
+    if (fracDigits === 0) {
+        return Math.round(value).toLocaleString('ja-JP', {
+            minimumFractionDigits: 0,
+            maximumFractionDigits: 0
+        });
+    }
     return value.toLocaleString('ja-JP', { 
       minimumFractionDigits: fracDigits, 
       maximumFractionDigits: fracDigits 
@@ -86,7 +92,7 @@ const ProjectDetailPage = () => {
     return value.toLocaleString('ja-JP', { 
       style: 'currency', 
       currency: 'JPY', 
-      minimumFractionDigits: 0, // PLは小数点なしで表示することが多い
+      minimumFractionDigits: 0, 
       maximumFractionDigits: 0 
     });
   };
@@ -107,10 +113,9 @@ const ProjectDetailPage = () => {
     </div>
   );
 
-  const chartLabels = stockRecords.map(record => record.Date);
+  const chartLabelsOriginalOrder = stockRecords.map(record => record.Date);
   const chartData = {
-    // ... (chartDataの定義は変更なし) ...
-    labels: chartLabels,
+    labels: chartLabelsOriginalOrder,
     datasets: [
       {
         type: 'line' as const,
@@ -155,7 +160,6 @@ const ProjectDetailPage = () => {
   };
 
   const chartOptions: any = { 
-    // ... (chartOptionsの定義は変更なし) ...
     responsive: true,
     maintainAspectRatio: false,
     layout: {
@@ -241,15 +245,64 @@ const ProjectDetailPage = () => {
     }
   };
 
+  // --- 最大・最小株数/日の計算 ---
+  let remainingShares: number | null = null;
+  if (typeof project.Total_Shares === 'number') {
+    remainingShares = Math.max(0, project.Total_Shares - (project.totalFilledQty || 0));
+  }
+
+  let daysUntilEarliest: number | null = null;
+  const tradedDays = project.tradedDaysCount || 0;
+  if (typeof project.Earliest_Day_Count === 'number') {
+    const diff = project.Earliest_Day_Count - tradedDays;
+    daysUntilEarliest = diff; // diff can be <= 0
+  }
+
+  let remainingBusinessDays: number | null = null;
+  if (typeof project.Business_Days === 'number') {
+    const diff = project.Business_Days - tradedDays;
+    remainingBusinessDays = diff; // diff can be <= 0
+  }
+
+  let maxSharesPerDayText: string = 'N/A';
+  if (remainingShares !== null) {
+    if (remainingShares === 0) {
+      maxSharesPerDayText = '0 株/日';
+    } else if (daysUntilEarliest !== null && daysUntilEarliest > 0) {
+      const maxShares = remainingShares / daysUntilEarliest;
+      maxSharesPerDayText = formatNumber(maxShares, 0) + ' 株/日'; // 小数点以下なし
+    } else if (daysUntilEarliest !== null && daysUntilEarliest <= 0) {
+      maxSharesPerDayText = '最短期限超過';
+    }
+  }
+  
+  let minSharesPerDayText: string = 'N/A';
+  if (remainingShares !== null) {
+    if (remainingShares === 0) {
+      minSharesPerDayText = '0 株/日';
+    } else if (remainingBusinessDays !== null && remainingBusinessDays > 0) {
+      const minShares = remainingShares / remainingBusinessDays;
+      minSharesPerDayText = formatNumber(minShares, 0) + ' 株/日'; // 小数点以下なし
+    } else if (remainingBusinessDays !== null && remainingBusinessDays <= 0) {
+      minSharesPerDayText = '残日数なし';
+    }
+  }
+  // --- 計算ここまで ---
+
+
   return (
     <div className="space-y-6">
-      <h1 className="text-3xl font-bold text-gray-800">
-        プロジェクト詳細: {project.Name} ({project.ProjectID || `Internal ID: ${project.internal_id}`})
-      </h1>
+      <div className="flex justify-between items-start">
+        <h1 className="text-3xl font-bold text-gray-800">
+          プロジェクト詳細: {project.Name} ({project.ProjectID || `Internal ID: ${project.internal_id}`})
+        </h1>
+        <div className="text-right">
+          <p className="text-sm text-gray-600">TS担当者:</p>
+          <p className="text-lg font-semibold text-gray-700">{project.TS_Contact || 'N/A'}</p>
+        </div>
+      </div>
 
-      {/* 進捗表示セクション (変更なし) */}
       <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
-        {/* ... ProgressBarDetail components ... */}
         <ProgressBarDetail
             label="経過日数進捗"
             progress={project.daysProgress}
@@ -268,16 +321,9 @@ const ProjectDetailPage = () => {
         />
       </div>
 
-      {/* パフォーマンス指標カード (変更あり: PL追加) */}
       <div className="bg-white shadow-lg rounded-lg p-6 mb-6">
         <h2 className="text-xl font-semibold text-gray-700 mb-4 border-b pb-2">パフォーマンス指標</h2>
-        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 text-center"> {/* 4列に変更 */}
-          <div>
-            <p className="text-sm text-gray-500">プロジェクトPL</p> {/* 新しい項目 */}
-            <p className={`text-2xl font-semibold ${project.projectPL !== null && project.projectPL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-              {formatCurrency(project.projectPL)}
-            </p>
-          </div>
+        <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4 text-center"> 
           <div>
             <p className="text-sm text-gray-500">ベンチマーク VWAP</p>
             <p className="text-2xl font-semibold text-indigo-600">
@@ -299,7 +345,7 @@ const ProjectDetailPage = () => {
         </div>
         {project.tradedDaysCount && project.tradedDaysCount > 0 ? (
             <p className="text-xs text-gray-500 mt-3 text-center">
-                ※ 日次平均指標は取引のあった {project.tradedDaysCount} 日間の平均です。PLは総計です。
+                ※ 日次平均指標は取引のあった {project.tradedDaysCount} 日間の平均です。
             </p>
         ) : (
             <p className="text-xs text-gray-500 mt-3 text-center">
@@ -308,10 +354,9 @@ const ProjectDetailPage = () => {
         )}
       </div>
 
-      {/* 基本情報セクション (変更なし) */}
       <div className="bg-white shadow-md rounded-lg p-6">
-         {/* ... Basic Info ... */}
          <h2 className="text-xl font-semibold mb-4 text-gray-700">基本情報</h2>
+        {/* md:grid-cols-2 から md:grid-cols-3 に変更することも検討。ここでは既存の2列を維持し、項目を追加 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <p><strong>銘柄コード:</strong> {project.Ticker}</p>
           <p><strong>銘柄名:</strong> {project.Name}</p>
@@ -333,11 +378,13 @@ const ProjectDetailPage = () => {
           <p><strong>固定手数料率:</strong> {project.Fixed_Fee_Rate ?? 'N/A'}%</p>
           <p><strong>営業日数 (Business Days):</strong> {project.Business_Days ?? 'N/A'}</p>
           <p><strong>最短日数カウント:</strong> {project.Earliest_Day_Count ?? 'N/A'}</p>
-          <p><strong>メモ:</strong> {project.Note || 'N/A'}</p>
+          <p><strong>除外日数:</strong> {formatNumber(project.Excluded_Days, 0) ?? 'N/A'}</p> 
+          <p><strong>最大株数/日:</strong> {maxSharesPerDayText}</p> {/* ADDED */}
+          <p><strong>最小株数/日:</strong> {minSharesPerDayText}</p> {/* ADDED */}
+          <p className="md:col-span-2"><strong>メモ:</strong> {project.Note || 'N/A'}</p> {/* メモを2カラムに広げる場合 */}
         </div>
       </div>
       
-      {/* チャート表示 (変更なし) */}
       {stockRecords && stockRecords.length > 0 && (
         <div className="bg-white shadow-md rounded-lg p-4 md:p-6">
           <div style={{ height: '400px' }}> 
@@ -346,10 +393,8 @@ const ProjectDetailPage = () => {
         </div>
       )}
 
-      {/* 取引履歴セクション (変更なし) */}
       {stockRecords && stockRecords.length > 0 ? (
         <div className="bg-white shadow-md rounded-lg mt-6">
-          {/* ... Transaction History Table ... */}
           <h2 className="text-xl font-semibold p-6 text-gray-700 border-b">取引履歴</h2>
           <div className="overflow-x-auto">
             <table className="min-w-full leading-normal">
@@ -357,10 +402,13 @@ const ProjectDetailPage = () => {
                 <tr className="bg-gray-200 text-gray-600 uppercase text-sm leading-normal">
                   <th className="py-3 px-6 text-left">日付</th>
                   <th className="py-3 px-6 text-right">約定数量</th>
+                  <th className="py-3 px-6 text-right">累積約定株数</th>
                   <th className="py-3 px-6 text-right">約定平均価格</th>
                   <th className="py-3 px-6 text-right">当日VWAP</th>
                   <th className="py-3 px-6 text-right">ベンチマーク推移</th>
                   <th className="py-3 px-6 text-right">VWAP Perf. (bps)</th>
+                  <th className="py-3 px-6 text-right">P/L (評価損益)</th>
+                  <th className="py-3 px-6 text-right">累積約定金額(円)</th>
                 </tr>
               </thead>
               <tbody className="text-gray-700 text-sm">
@@ -368,6 +416,7 @@ const ProjectDetailPage = () => {
                   <tr key={index} className="border-b border-gray-200 hover:bg-gray-100">
                     <td className="py-3 px-6 text-left whitespace-nowrap">{record.Date}</td>
                     <td className="py-3 px-6 text-right">{formatNumber(record.FilledQty, 0)}</td>
+                    <td className="py-3 px-6 text-right">{formatNumber(record.cumulativeFilledQty, 0, '-')}</td>
                     <td className="py-3 px-6 text-right">{formatNumber(record.FilledAveragePrice, 2)}</td>
                     <td className="py-3 px-6 text-right">{formatNumber(record.ALL_DAY_VWAP, 2)}</td>
                     <td className="py-3 px-6 text-right">
@@ -375,6 +424,12 @@ const ProjectDetailPage = () => {
                     </td>
                     <td className="py-3 px-6 text-right">
                       {formatNumber(record.vwapPerformanceBps, 1, '-')}
+                    </td>
+                    <td className={`py-3 px-6 text-right ${record.dailyPL !== null && record.dailyPL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                      {formatCurrency(record.dailyPL, '-')}
+                    </td>
+                    <td className="py-3 px-6 text-right">
+                      {formatCurrency(record.cumulativeFilledAmount, '-')}
                     </td>
                   </tr>
                 ))}
