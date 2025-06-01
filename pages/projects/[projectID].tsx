@@ -74,13 +74,6 @@ const ProjectDetailPage = () => {
 
   const formatNumber = (value: number | null | undefined, fracDigits = 2, defaultVal: string = 'N/A') => {
     if (value === null || value === undefined) return defaultVal;
-    // 整数部のみカンマ区切り、小数点以下は指定通り
-    if (fracDigits === 0) {
-        return Math.round(value).toLocaleString('ja-JP', {
-            minimumFractionDigits: 0,
-            maximumFractionDigits: 0
-        });
-    }
     return value.toLocaleString('ja-JP', { 
       minimumFractionDigits: fracDigits, 
       maximumFractionDigits: fracDigits 
@@ -245,51 +238,6 @@ const ProjectDetailPage = () => {
     }
   };
 
-  // --- 最大・最小株数/日の計算 ---
-  let remainingShares: number | null = null;
-  if (typeof project.Total_Shares === 'number') {
-    remainingShares = Math.max(0, project.Total_Shares - (project.totalFilledQty || 0));
-  }
-
-  let daysUntilEarliest: number | null = null;
-  const tradedDays = project.tradedDaysCount || 0;
-  if (typeof project.Earliest_Day_Count === 'number') {
-    const diff = project.Earliest_Day_Count - tradedDays;
-    daysUntilEarliest = diff; // diff can be <= 0
-  }
-
-  let remainingBusinessDays: number | null = null;
-  if (typeof project.Business_Days === 'number') {
-    const diff = project.Business_Days - tradedDays;
-    remainingBusinessDays = diff; // diff can be <= 0
-  }
-
-  let maxSharesPerDayText: string = 'N/A';
-  if (remainingShares !== null) {
-    if (remainingShares === 0) {
-      maxSharesPerDayText = '0 株/日';
-    } else if (daysUntilEarliest !== null && daysUntilEarliest > 0) {
-      const maxShares = remainingShares / daysUntilEarliest;
-      maxSharesPerDayText = formatNumber(maxShares, 0) + ' 株/日'; // 小数点以下なし
-    } else if (daysUntilEarliest !== null && daysUntilEarliest <= 0) {
-      maxSharesPerDayText = '最短期限超過';
-    }
-  }
-  
-  let minSharesPerDayText: string = 'N/A';
-  if (remainingShares !== null) {
-    if (remainingShares === 0) {
-      minSharesPerDayText = '0 株/日';
-    } else if (remainingBusinessDays !== null && remainingBusinessDays > 0) {
-      const minShares = remainingShares / remainingBusinessDays;
-      minSharesPerDayText = formatNumber(minShares, 0) + ' 株/日'; // 小数点以下なし
-    } else if (remainingBusinessDays !== null && remainingBusinessDays <= 0) {
-      minSharesPerDayText = '残日数なし';
-    }
-  }
-  // --- 計算ここまで ---
-
-
   return (
     <div className="space-y-6">
       <div className="flex justify-between items-start">
@@ -356,7 +304,6 @@ const ProjectDetailPage = () => {
 
       <div className="bg-white shadow-md rounded-lg p-6">
          <h2 className="text-xl font-semibold mb-4 text-gray-700">基本情報</h2>
-        {/* md:grid-cols-2 から md:grid-cols-3 に変更することも検討。ここでは既存の2列を維持し、項目を追加 */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
           <p><strong>銘柄コード:</strong> {project.Ticker}</p>
           <p><strong>銘柄名:</strong> {project.Name}</p>
@@ -379,9 +326,7 @@ const ProjectDetailPage = () => {
           <p><strong>営業日数 (Business Days):</strong> {project.Business_Days ?? 'N/A'}</p>
           <p><strong>最短日数カウント:</strong> {project.Earliest_Day_Count ?? 'N/A'}</p>
           <p><strong>除外日数:</strong> {formatNumber(project.Excluded_Days, 0) ?? 'N/A'}</p> 
-          <p><strong>最大株数/日:</strong> {maxSharesPerDayText}</p> {/* ADDED */}
-          <p><strong>最小株数/日:</strong> {minSharesPerDayText}</p> {/* ADDED */}
-          <p className="md:col-span-2"><strong>メモ:</strong> {project.Note || 'N/A'}</p> {/* メモを2カラムに広げる場合 */}
+          <p><strong>メモ:</strong> {project.Note || 'N/A'}</p>
         </div>
       </div>
       
@@ -407,7 +352,7 @@ const ProjectDetailPage = () => {
                   <th className="py-3 px-6 text-right">当日VWAP</th>
                   <th className="py-3 px-6 text-right">ベンチマーク推移</th>
                   <th className="py-3 px-6 text-right">VWAP Perf. (bps)</th>
-                  <th className="py-3 px-6 text-right">P/L (評価損益)</th>
+                  <th className="py-3 px-6 text-right">P/L (評価損益)</th> {/* ADDED HEADER */}
                   <th className="py-3 px-6 text-right">累積約定金額(円)</th>
                 </tr>
               </thead>
@@ -425,7 +370,7 @@ const ProjectDetailPage = () => {
                     <td className="py-3 px-6 text-right">
                       {formatNumber(record.vwapPerformanceBps, 1, '-')}
                     </td>
-                    <td className={`py-3 px-6 text-right ${record.dailyPL !== null && record.dailyPL >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                    <td className={`py-3 px-6 text-right ${record.dailyPL !== null && record.dailyPL >= 0 ? 'text-green-600' : 'text-red-600'}`}> {/* ADDED CELL */}
                       {formatCurrency(record.dailyPL, '-')}
                     </td>
                     <td className="py-3 px-6 text-right">
